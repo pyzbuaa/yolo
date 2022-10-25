@@ -1,5 +1,4 @@
 from itertools import chain
-from statistics import mode
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -169,7 +168,7 @@ class YOLONeck(nn.Module):
 
 
 class YOLOHead(nn.Module):
-    def __init__(self, stride, anchors, num_classes):
+    def __init__(self, in_channels, stride, anchors, num_classes):
         super(YOLOHead, self).__init__()
         self.stride = stride
         self.num_anchors = len(anchors)
@@ -180,13 +179,18 @@ class YOLOHead(nn.Module):
         anchors_grid = anchors.clone().view(1, -1, 1, 1, 2) # (1, num_anchors, 1, 1, 2)
         self.register_buffer('anchors', anchors)
         self.register_buffer('anchor_grid', anchors_grid)
-
         self.grid = None
+
+        mid_channels = 2 * in_channels
+        out_channels = self.num_anchors * self.num_per_anchor
+        self.conv = ConvBlock(in_channels, mid_channels, 3, padding=1)
+        self.head = nn.Conv2d(mid_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
         """
         x: (b, A*(4 + 1 + c), h, w)
         """
+        x = self.head(self.conv(x))
         # (B, C, H, W) => (B, n_anchors, H, W, n_classes + 5)
         B, _, H, W = x.shape
         x = x.view(B, self.num_anchors, self.num_per_anchor, H, W).permute(0, 1, 3, 4, 2).contiguous()
@@ -206,6 +210,28 @@ class YOLOHead(nn.Module):
     def make_grid(w, h):
         yv, xv = torch.meshgrid([torch.arange(h), torch.arange(w)], indexing='ij')
         return torch.stack((xv, yv), 2).view((1, 1, h, w, 2)).float()
+
+
+class YOLO(nn.Module):
+    def __init__(self, anchors, num_classes):
+        super(YOLO, self).__init__()
+        self.backbone = Darknet53()
+        self.neck = YOLONeck(
+            in_channels=(256, 512, 1024),
+            out_channels=(128, 256, 512)
+        )
+        self.head0 = YOLOHead(128, 8, anchors[0], num_classes)
+        self.head1 = YOLOHead(256, 16, anchors[1], num_classes)
+        self.head2 = YOLOHead(512, 32, anchors[2], num_classes)
+
+    def forward(self, x):
+        outs = []
+        feats = self.backbone(x)
+        feats = self.neck(feats)
+        outs.append(self.head0(feats[0]))
+        outs.append(self.head1(feats[1]))
+        outs.append(self.head2(feats[2]))
+        return outs
 
 
 if __name__ == "__main__":
@@ -232,7 +258,16 @@ if __name__ == "__main__":
     # print(outs[1].shape)
     # print(outs[2].shape)
 
-    anchors = [(10, 13), (16, 30), (33, 23)]
-    model = YOLOHead(32, anchors, 80)
-    x = torch.randn((1, 255, 8, 8))
-    print(model(x).shape)
+    # anchors = [(10, 13), (16, 30), (33, 23)]
+    # model = YOLOHead(32, anchors, 80)
+    # x = torch.randn((1, 255, 8, 8))
+    # print(model(x).shape)
+
+    anchors = [[()], [], []]
+    num_classes = 20
+    model = YOLO(anchors, num_classes)
+    x = torch.randn((1, 3, 416, 416))
+    outs = model(x)
+    print(outs[0].shape)
+    print(outs[1].shape)
+    print(outs[2].shape)

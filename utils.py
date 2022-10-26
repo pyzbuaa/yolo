@@ -1,9 +1,29 @@
 import cv2
+import os
+import os.path as osp
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.ticker import NullLocator
+
+import torch
+
+
+def worker_seed_set(worker_id):
+    # See for details of numpy:
+    # https://github.com/pytorch/pytorch/issues/5059#issuecomment-817392562
+    # See for details of random:
+    # https://pytorch.org/docs/stable/notes/randomness.html#dataloader
+
+    # NumPy
+    uint64_seed = torch.initial_seed()
+    ss = np.random.SeedSequence([uint64_seed])
+    np.random.seed(ss.generate_state(4))
+
+    # random
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
 
 
 def xywh2xyxy(xywh):
@@ -15,21 +35,30 @@ def xywh2xyxy(xywh):
     return xyxy
 
 
-def vis_batch(imgs, targets, prefix):
+def vis_batch(out_path, imgs, targets, num_classes, prefix):
+    os.makedirs(out_path, exist_ok=True)
     imgs = imgs.cpu().numpy()
     targets = targets.cpu().numpy()
 
-    unique_labels = targets[:, 0].unique()
-    n_classes_in_batch = len(unique_labels)
-
-    cmap = plt.get_cmap("tab20b")
-    colors = [cmap(i) for i in np.linspace(0, 1, n_classes_in_batch)]
-    bbox_colors = random.sample(colors, n_classes_in_batch)
-
     batch_size = imgs.shape[0]
     for i in range(batch_size):
-        img = (imgs[i].transpose((1, 2, 0)) * 255.).astype(np.uint8)
+        img = np.ascontiguousarray((imgs[i].transpose((1, 2, 0))[:, :, ::-1] * 255.).astype(np.uint8))
         target = targets[targets[:, 0] == i][:, 1:]
+
+        img_h, img_w, _ = img.shape
+        bboxes = target[:, 1:]
+        bboxes[:, [0, 2]] *= img_w
+        bboxes[:, [1, 3]] *= img_h
+        bboxes = xywh2xyxy(bboxes)
+        for bbox in bboxes:
+            cv2.rectangle(img,
+                         (int(bbox[0]), int(bbox[1])),
+                         (int(bbox[2]), int(bbox[3])),
+                         (0, 255, 0),
+                         thickness=1)
+
+        img_path = osp.join(out_path, f'batch{prefix}_{i}.png')
+        cv2.imwrite(img_path, img)
 
 
 if __name__ == '__main__':

@@ -162,7 +162,7 @@ class YOLONeck(nn.Module):
             x = torch.cat((bottom, x), 1)
 
             out = getattr(self, f'yolo_block{level_id}')(x)
-            outs.append(out)
+            outs.insert(0, out)
 
         return outs
 
@@ -191,13 +191,14 @@ class YOLOHead(nn.Module):
         x: (b, A*(4 + 1 + c), h, w)
         """
         x = self.head(self.conv(x))
+        print(x.shape)
         # (B, C, H, W) => (B, n_anchors, H, W, n_classes + 5)
         B, _, H, W = x.shape
         x = x.view(B, self.num_anchors, self.num_per_anchor, H, W).permute(0, 1, 3, 4, 2).contiguous()
 
         # decode
         if self.grid is None:
-            self.grid = self.make_grid(W, H) # (1, 1, H, W, 2)
+            self.grid = self.make_grid(W, H).to(x.device) # (1, 1, H, W, 2)
 
         x[..., 0:2] = (x[..., 0:2].sigmoid() + self.grid) * self.stride
         x[..., 2:4] = torch.exp(x[..., 2:4]) * self.anchor_grid
@@ -234,6 +235,17 @@ class YOLO(nn.Module):
         return outs
 
 
+def build_model(anchors, num_classes, device, checkpoint=None):
+    model = YOLO(anchors, num_classes)
+
+    if checkpoint:
+        model.load_state_dict(torch.load(checkpoint, map_location='cpu'))
+
+    model = model.to(device)
+
+    return model
+
+
 if __name__ == "__main__":
     # x = torch.randn((1, 3, 416, 416))
     # model = Darknet53()
@@ -263,7 +275,9 @@ if __name__ == "__main__":
     # x = torch.randn((1, 255, 8, 8))
     # print(model(x).shape)
 
-    anchors = [[()], [], []]
+    anchors = [[(10, 13), (16, 30), (33, 23)],
+            [(30, 61), (62, 45), (59, 119)],
+            [(116, 90), (156, 198), (373, 326)]]
     num_classes = 20
     model = YOLO(anchors, num_classes)
     x = torch.randn((1, 3, 416, 416))

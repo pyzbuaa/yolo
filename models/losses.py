@@ -30,3 +30,5 @@ def build_target(targets, preds, anchors):
 
     bboxes_xy = targets[[2, 3]] # (N, 2)
     bboxes_wh = targets[[4, 5]] # (N, 2)
+
+    # 

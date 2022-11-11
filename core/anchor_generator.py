@@ -1,3 +1,5 @@
+import enum
+from numpy import uint8
 import torch
 
 
@@ -21,6 +23,11 @@ class YOLOAnchorGenerator(object):
         self.base_sizes = [torch.Tensor(base_size)
                            for base_size in base_sizes]
         self.multi_level_base_anchors = self.gen_base_anchors()
+        self.num_anchors_per_grid = self.multi_level_base_anchors[0].shape[0]
+
+    @property
+    def num_anchors_per_grid(self):
+        return self.num_anchors_per_grid
 
     def gen_base_anchors(self):
         """
@@ -29,11 +36,11 @@ class YOLOAnchorGenerator(object):
         multi_level_base_anchors = []
         for center, base_size in zip(self.centers, self.base_sizes):
             multi_level_base_anchors.append(
-                self.gen_single_level_base_anchors(center, base_size)
+                self._gen_single_level_base_anchors(center, base_size)
             )
         return multi_level_base_anchors
 
-    def gen_single_level_base_anchors(self, center, base_sizes):
+    def _gen_single_level_base_anchors(self, center, base_sizes):
         """
         Generate base anchors in single level feature map.
 
@@ -69,7 +76,7 @@ class YOLOAnchorGenerator(object):
         """
         multilevel_anchors = []
         for level_id, feat_size in enumerate(feat_sizes):
-            single_level_anchors = self.single_level_grid_anchors(
+            single_level_anchors = self._single_level_grid_anchors(
                 self.multi_level_base_anchors[level_id],
                 feat_size,
                 self.strides[level_id]
@@ -77,7 +84,7 @@ class YOLOAnchorGenerator(object):
             multilevel_anchors.append(single_level_anchors)
         return multilevel_anchors
         
-    def single_level_grid_anchors(self, base_anchor, feat_size, stride):
+    def _single_level_grid_anchors(self, base_anchor, feat_size, stride):
         """
         Generate grid anchors in single level feature map.
 
@@ -104,6 +111,40 @@ class YOLOAnchorGenerator(object):
         grid_anchors = grid_anchors.view(-1, 4)
 
         return grid_anchors
+
+    def anchor_mask(self, feat_sizes, gt_bboxes, anchors_per_grid):
+        multilevel_anchor_mask = []
+        for level_id, feat_size in enumerate(feat_sizes):
+            single_level_anchor_mask = self._single_level_anchor_mask(
+                feat_size,
+                gt_bboxes,
+                anchors_per_grid
+            )
+            multilevel_anchor_mask.append(single_level_anchor_mask)
+        return multilevel_anchor_mask
+
+    def _single_level_anchor_mask(self, feat_size, gt_bboxes, anchors_per_grid):
+        """
+        Args:
+            feat_size (tuple[int, int]): Size of the feature maps,
+                (feat_h, feat_w).
+            gt_bboxes (torch.Tensor): GT bboxes, shape=(N, 4),
+                (cx, cy, w, h), normalized by image.
+            anchors_per_grid (int): Number of anchors per grid.
+
+        Returns:
+            torch.Tensor: shape=(N, )
+        """
+        feat_h, feat_w = feat_size
+        gt_bbox_grid_x = torch.floor(gt_bboxes[:, 0])
+        gt_bbox_grid_y = torch.floor(gt_bboxes[:, 1])
+        gt_bbox_grid_idx = feat_w * gt_bbox_grid_y + gt_bbox_grid_x
+
+        anchor_masks = torch.zeros((feat_h * feat_w), dtype=uint8)
+        anchor_masks[gt_bbox_grid_idx] = 1
+        anchor_masks[:, None].repeat(1, anchors_per_grid).reshape(-1)
+
+        return anchor_masks
 
 
 if __name__ == '__main__':

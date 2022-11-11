@@ -167,63 +167,74 @@ class YOLONeck(nn.Module):
         return outs
 
 
-class YOLOHead(nn.Module):
-    def __init__(self, in_channels, stride, anchors, num_classes):
-        super(YOLOHead, self).__init__()
-        self.stride = stride
-        self.num_anchors = len(anchors)
+class YOLOV3Head(nn.Module):
+    def __init__(self,
+                 num_classes,
+                 in_channels,
+                 out_channels,
+                 strides,
+                 anchor_generator,
+                 assigner):
+        super(YOLOV3Head, self).__init__()
         self.num_classes = num_classes
-        self.num_per_anchor = 5 + num_classes
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.strides = strides
+        self.anchor_generator = anchor_generator
+        self.assigner = assigner
 
-        anchors = torch.tensor(list(chain(*anchors))).float().view(-1, 2) # (n_anchors, 2)
-        anchors_grid = anchors.clone().view(1, -1, 1, 1, 2) # (1, num_anchors, 1, 1, 2)
-        self.register_buffer('anchors', anchors)
-        self.register_buffer('anchor_grid', anchors_grid)
-        self.grid = None
+        # default: 3
+        self.num_anchors_per_grid = self.anchor_generator.num_anchors_per_grid
+        self.num_channel_per_anchor = 5 + self.num_classes
+        self.num_levels = len(strides)
 
-        mid_channels = 2 * in_channels
-        out_channels = self.num_anchors * self.num_per_anchor
-        self.conv = ConvBlock(in_channels, mid_channels, 3, padding=1)
-        self.head = nn.Conv2d(mid_channels, out_channels, kernel_size=1)
+        self.convs_bridge = nn.ModuleList()
+        self.convs_pred = nn.ModuleList()
+        for i in range(self.num_levels):
+            conv_bridge = ConvBlock(
+                self.in_channels[i],
+                self.out_channels[i],
+                kernel_size=3,
+                stride=1,
+                padding=1)
+            conv_pred = nn.Conv2d(
+                self.out_channels[i],
+                self.num_channel_per_anchor * self.num_anchors_per_grid,
+                1)
+            self.convs_bridge.append(conv_bridge)
+            self.convs_pred.append(conv_pred)
 
-    def forward(self, x):
+    def init_weights(self):
         """
-        x: (b, A*(4 + 1 + c), h, w)
+        TODO
         """
-        x = self.head(self.conv(x))
-        print(x.shape)
-        # (B, C, H, W) => (B, n_anchors, H, W, n_classes + 5)
-        B, _, H, W = x.shape
-        x = x.view(B, self.num_anchors, self.num_per_anchor, H, W).permute(0, 1, 3, 4, 2).contiguous()
+        pass
 
-        # decode
-        if self.grid is None:
-            self.grid = self.make_grid(W, H).to(x.device) # (1, 1, H, W, 2)
-
-        x[..., 0:2] = (x[..., 0:2].sigmoid() + self.grid) * self.stride
-        x[..., 2:4] = torch.exp(x[..., 2:4]) * self.anchor_grid
-        x[..., 4:] = x[..., 4:].sigmoid() # (B, n_anchors, H, W, num_per_anchor)
-
-        x = x.view(B, -1, self.num_per_anchor) # (B, b_boxes, num_per_anchor)
-        return x
-
-    @staticmethod
-    def make_grid(w, h):
-        yv, xv = torch.meshgrid([torch.arange(h), torch.arange(w)], indexing='ij')
-        return torch.stack((xv, yv), 2).view((1, 1, h, w, 2)).float()
+    def forward(self, feats):
+        preds = []
+        for i in range(self.num_levels):
+            x = feats[i]
+            x = self.convs_bridge[i](x)
+            pred = self.convs_pred[i](x)
+            preds.append(pred)
+        return preds
 
 
 class YOLO(nn.Module):
-    def __init__(self, anchors, num_classes):
+    def __init__(self, num_classes):
         super(YOLO, self).__init__()
+        anchor_generator = None
+
         self.backbone = Darknet53()
         self.neck = YOLONeck(
             in_channels=(256, 512, 1024),
             out_channels=(128, 256, 512)
         )
-        self.head0 = YOLOHead(128, 8, anchors[0], num_classes)
-        self.head1 = YOLOHead(256, 16, anchors[1], num_classes)
-        self.head2 = YOLOHead(512, 32, anchors[2], num_classes)
+        self.head = YOLOV3Head(
+            num_classes,
+            in_channels=(128, 256, 512),
+            out_channels=(256, 512, 1024),
+            strides=(8, 16, 32))
 
     def forward(self, x):
         outs = []
